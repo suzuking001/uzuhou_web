@@ -8,7 +8,7 @@ import { QualityManager } from '../rendering/QualityManager';
 import { MAX_PARTICLES, MAX_TRACERS, WORKGROUP_SIZE } from '../simulation/constants';
 import { compareGpuVelocityWithCpu, type GpuValidationResult } from '../simulation/gpuValidation';
 import { createPreset } from '../simulation/presets';
-import type { DisplayMode, PerformanceSnapshot, PresetId, QualityMode, SimulationParameters, VortexParticle } from '../simulation/types';
+import type { AlgorithmMode, DisplayMode, PerformanceSnapshot, PresetId, QualityMode, SimulationParameters, VortexParticle } from '../simulation/types';
 
 export interface ControllerCallbacks {
   onMetrics: (snapshot: PerformanceSnapshot, time: number) => void;
@@ -24,6 +24,8 @@ export class SimulationController {
   readonly parameters: SimulationParameters;
   displayMode: DisplayMode = 'combined';
   qualityMode: QualityMode = 'auto';
+  algorithmMode: AlgorithmMode = 'direct';
+  gridResolution = 8;
   gridEnabled = true;
   playing = true;
 
@@ -42,6 +44,9 @@ export class SimulationController {
   private singleStepRequested = false;
   private animationFrame = 0;
   private disposed = false;
+  private observedProfilerSample = 0;
+  private benchmarkRevision = 0;
+  private readonly algorithmTimings: Record<AlgorithmMode, number | null> = { direct: null, 'uniform-grid': null };
 
   private constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -83,6 +88,18 @@ export class SimulationController {
   togglePlaying(): boolean { this.playing = !this.playing; return this.playing; }
   pause(): void { this.playing = false; }
   stepOnce(): void { this.singleStepRequested = true; }
+  setAlgorithmMode(mode: AlgorithmMode): void { this.algorithmMode = mode; }
+  setGridResolution(resolution: number): void {
+    const next = Math.max(4, Math.min(32, Math.round(resolution)));
+    if (next === this.gridResolution) return;
+    this.gridResolution = next;
+    this.invalidatePerformanceComparison();
+  }
+  invalidatePerformanceComparison(): void {
+    this.benchmarkRevision += 1;
+    this.algorithmTimings.direct = null;
+    this.algorithmTimings['uniform-grid'] = null;
+  }
 
   reset(preset = this.preset): void {
     this.preset = preset;
@@ -91,6 +108,7 @@ export class SimulationController {
     this.parameters.particleCount = particles.length;
     this.simulationTime = 0;
     this.trailIndex = 0;
+    this.invalidatePerformanceComparison();
     this.buffers.initializeParticles(particles);
     this.buffers.initializeTracers(this.parameters.tracerCount, this.parameters.domainWidth, this.parameters.domainHeight);
     this.callbacks.onParticleCount(particles.length);
@@ -114,6 +132,7 @@ export class SimulationController {
     };
     this.buffers.writeParticle(this.activeParticleCount, particle);
     this.activeParticleCount += 1;
+    this.invalidatePerformanceComparison();
     this.parameters.particleCount = this.activeParticleCount;
     this.callbacks.onParticleCount(this.activeParticleCount);
     return true;
@@ -154,10 +173,10 @@ export class SimulationController {
         trailLength: effectiveTrailLength,
       };
       this.trailIndex = (this.trailIndex + 1) % 4_294_967_295;
-      this.buffers.writeSimulationUniforms(effectiveParameters, this.activeParticleCount, settings.fieldResolution, this.simulationTime, this.trailIndex, 0);
+      this.buffers.writeSimulationUniforms(effectiveParameters, this.activeParticleCount, settings.fieldResolution, this.simulationTime, this.trailIndex, this.gridResolution);
       const encoder = this.webgpu.device.createCommandEncoder({ label: 'RK2 simulation step' });
-      const pass = encoder.beginComputePass({ timestampWrites: this.profiler.beginFrame() });
-      this.compute.encodeStep(pass, this.activeParticleCount, effectiveTracerCount);
+      const pass = encoder.beginComputePass({ timestampWrites: this.profiler.beginFrame(`${this.algorithmMode}:${this.benchmarkRevision}`) });
+      this.compute.encodeStep(pass, this.activeParticleCount, effectiveTracerCount, this.algorithmMode, this.gridResolution);
       pass.end();
       this.profiler.resolve(encoder);
       this.webgpu.device.queue.submit([encoder.finish()]);
@@ -167,22 +186,44 @@ export class SimulationController {
     }
 
     const renderParameters = { ...this.parameters, tracerCount: effectiveTracerCount, trailLength: effectiveTrailLength };
-    this.buffers.writeSimulationUniforms(renderParameters, this.activeParticleCount, settings.fieldResolution, this.simulationTime, this.trailIndex, 0);
+    this.captureProfilerSample();
+    this.buffers.writeSimulationUniforms(renderParameters, this.activeParticleCount, settings.fieldResolution, this.simulationTime, this.trailIndex, this.gridResolution);
     this.camera.writeUniforms(this.webgpu.device, this.buffers.cameraUniformBuffer, this.canvas.width, this.canvas.height, 8.5 * devicePixelRatio * settings.resolutionScale, 0.08, 0.75, 0.72, this.gridEnabled, this.simulationTime);
     const encoder = this.webgpu.device.createCommandEncoder({ label: 'field and rendering' });
     const fieldPass = encoder.beginComputePass();
-    this.compute.encodeField(fieldPass, settings.fieldResolution, false);
+    this.compute.encodeField(fieldPass, settings.fieldResolution, false, this.algorithmMode, this.gridResolution);
     fieldPass.end();
     this.renderer.encode(encoder, this.webgpu.context.getCurrentTexture().createView(), this.displayMode, this.activeParticleCount, effectiveTracerCount, settings.fieldResolution);
     this.webgpu.device.queue.submit([encoder.finish()]);
 
+    const directGpuTimeMs = this.algorithmTimings.direct;
+    const gridGpuTimeMs = this.algorithmTimings['uniform-grid'];
     this.callbacks.onMetrics({
-      fps: this.fps, gpuTimeMs: this.profiler.latestMs, particleCount: this.activeParticleCount,
-      tracerCount: effectiveTracerCount, interactions: this.activeParticleCount * Math.max(0, this.activeParticleCount - 1),
+      fps: this.fps, gpuTimeMs: this.algorithmTimings[this.algorithmMode], particleCount: this.activeParticleCount,
+      tracerCount: effectiveTracerCount,
+      interactions: this.algorithmMode === 'direct'
+        ? this.activeParticleCount * Math.max(0, this.activeParticleCount - 1)
+        : this.activeParticleCount * this.gridResolution * this.gridResolution * 2,
       fieldResolution: settings.fieldResolution, resolutionScale: settings.resolutionScale, workgroupSize: WORKGROUP_SIZE,
+      algorithmMode: this.algorithmMode, gridResolution: this.gridResolution,
+      evaluatedSources: this.algorithmMode === 'direct' ? this.activeParticleCount : this.gridResolution * this.gridResolution * 2,
+      directGpuTimeMs, gridGpuTimeMs,
+      speedup: directGpuTimeMs !== null && gridGpuTimeMs !== null && gridGpuTimeMs > 0 ? directGpuTimeMs / gridGpuTimeMs : null,
     }, this.simulationTime);
     this.animationFrame = requestAnimationFrame(this.frame);
   };
+
+  private captureProfilerSample(): void {
+    if (this.profiler.latestSampleId === this.observedProfilerSample) return;
+    this.observedProfilerSample = this.profiler.latestSampleId;
+    const tag = this.profiler.latestSampleTag;
+    const sample = this.profiler.latestMs;
+    const match = tag?.match(/^(direct|uniform-grid):(\d+)$/);
+    if (!match || Number(match[2]) !== this.benchmarkRevision || sample === null) return;
+    const mode = match[1] as AlgorithmMode;
+    const previous = this.algorithmTimings[mode];
+    this.algorithmTimings[mode] = previous === null ? sample : previous * 0.7 + sample * 0.3;
+  }
 
   dispose(): void {
     this.disposed = true;

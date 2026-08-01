@@ -4,13 +4,13 @@
 
 科学的な挙動を持つ小規模な教育・可視化・アルゴリズム実験用アプリです。単なるパーティクルアニメーションではなく、各渦粒子間の Biot–Savart 相互作用を GPU 上で直接評価します。
 
-## スクリーンショット
+## デモ
 
-アプリの「スクリーンショット」ボタンで PNG を保存できます。README 用画像は [`docs/screenshots/`](docs/screenshots/) に配置してください。
+プリセットを切り替えながら、渦粒子とパッシブトレーサーが速度場に沿って発展する様子です。
 
-<!-- 画像を追加したら次のコメントを解除してください。
-![Vortex Lab screenshot](docs/screenshots/vortex-lab.png)
--->
+![Vortex Lab のシミュレーションデモ](docs/screenshots/vortex-lab-demo.gif)
+
+アプリの「スクリーンショット」ボタンから、任意の状態を PNG でも保存できます。
 
 ## 数値モデル
 
@@ -40,7 +40,12 @@ vᵢ = Uy + Σ[j≠i]  Γⱼ/(2π) · (xᵢ-xⱼ)/(rᵢⱼ²+εⱼ²)
 
 ## GPU 計算
 
-1スレッドが1つの渦粒子を担当し、workgroup size は `64` です。直接相互作用なので1ステップは **O(N²)** です。フレーム中の粒子データ読戻しは行いません。計算後の Storage Buffer をそのまま描画パイプラインへ渡します。
+計算モードは次の2種類です。
+
+- **Direct（現行・厳密）**: 1スレッドが1つの渦粒子を担当し、全粒子を直接走査します。相互作用は **O(N²)** です。
+- **Uniform Grid（集約・高速）**: 領域を `4²`～`32²` セルへ分割し、各セルの循環・循環重み付き重心・実効コア半径を集約します。正負の循環は相殺しないよう別々に保持し、粒子更新、トレーサー、速度場から再利用します。セル数を `C` とすると粒子更新はおおむね **O(NC)** です。
+
+どちらも workgroup size は `64` で、フレーム中の粒子データ読戻しは行いません。計算後の Storage Buffer をそのまま描画パイプラインへ渡します。
 
 RK2 は次の4パスで構成します。
 
@@ -52,7 +57,15 @@ current + midpoint velocity ──final──> next
                                       └─ ping-pong swap
 ```
 
-速度計算は [`src/gpu/ComputePipeline.ts`](src/gpu/ComputePipeline.ts) と [`src/shaders/vortexVelocity.wgsl`](src/shaders/vortexVelocity.wgsl) に分離してあります。Uniform Grid、Particle-Mesh、Barnes–Hut、FMM へ交換するときも、積分・描画・UI の責務を維持できます。
+Direct速度計算は [`src/shaders/vortexVelocity.wgsl`](src/shaders/vortexVelocity.wgsl)、Grid集約は [`src/shaders/uniformGrid.wgsl`](src/shaders/uniformGrid.wgsl)、集約セルからの速度計算は [`src/shaders/gridVelocity.wgsl`](src/shaders/gridVelocity.wgsl) に分離しています。パスの切り替えは [`src/gpu/ComputePipeline.ts`](src/gpu/ComputePipeline.ts) が担当します。
+
+### 速度比較
+
+1. 「計算モード」を Direct にして、パフォーマンス欄の `DIRECT` が計測されるまで待ちます。
+2. 初期条件や粒子数を変えず Uniform Grid に切り替えます。
+3. `UNIFORM GRID` と `SPEEDUP` を確認します。`SPEEDUP = Direct時間 / Grid時間` なので、`1.00×` より大きいほど高速です。
+
+GPU時間は同じRK2ステップ（トレーサー更新を含む）のタイムスタンプ移動平均です。少粒子では集約コストが勝ってGridが遅い場合があります。Grid解像度を上げるほど空間近似は細かくなりますが、計算量も増えます。
 
 ### TS / WGSL バッファレイアウト
 
@@ -165,10 +178,11 @@ src/
 
 ## 性能と精度の制約
 
-- 相互作用は O(N²)。既定最大粒子数は2,048で、実用上限はGPUによって大きく異なります。
+- Direct相互作用は O(N²)。Uniform Gridは固定セル数に対しておおむね O(NC) です。既定最大粒子数は2,048で、実用上限はGPUによって大きく異なります。
 - GPU計算は f32。CPU参照の f64 より丸め誤差が大きく、長時間では軌道位相がずれます。
 - 速度場描画にも `粒子数 × サンプル数` の計算が必要です。
 - 正則化コアと速度・移動制限は安定化に有効ですが、空間収束性を保証しません。
+- Uniform Gridはセル内の渦を集約する近似です。Directと同一軌道になることは保証せず、精度が必要な比較ではGrid解像度を上げるかDirectを使用します。
 - 非粘性モデルなので、粘性拡散、壁面境界層、抗力を再現しません。
 - 背景タブ、省電力モード、統合GPU、モバイルの熱制限で性能が変動します。
 
@@ -177,13 +191,13 @@ src/
 - 円柱・任意形状の固体境界
 - パネル法、境界渦法、Brinkman penalization、SDF 障害物
 - 粘性・渦コア拡散・渦伸長
-- Particle-Mesh、Uniform Grid、Barnes–Hut、FMM
+- Particle-Mesh、Barnes–Hut、FMM
 - 周期 Green 関数や鏡像渦による厳密な境界条件
 - 解析状態の保存、動画書き出し、工業解析形式の入出力
 
 ## 将来計画
 
-1. Uniform Grid / Particle-Mesh による大規模化
+1. Particle-Mesh による大規模化とUniform Gridの近傍セル精密化
 2. 円柱 SDF と境界渦法による円柱後流
 3. 渦コア拡散法による粘性近似
 4. 保存量（循環、力積、角力積）の継続監視

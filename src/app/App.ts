@@ -1,7 +1,7 @@
 import { saveScreenshot } from '../rendering/Screenshot';
 import { DEFAULTS, MAX_PARTICLES, MAX_TRACERS } from '../simulation/constants';
 import { PRESETS } from '../simulation/presets';
-import type { BoundaryMode, DisplayMode, PresetId, QualityMode, SimulationParameters } from '../simulation/types';
+import type { AlgorithmMode, BoundaryMode, DisplayMode, PresetId, QualityMode, SimulationParameters } from '../simulation/types';
 import { runCpuValidation } from '../simulation/validation';
 import { requiredElement, setRangeOutput } from '../ui/Controls';
 import { PerformancePanel } from '../ui/PerformancePanel';
@@ -124,6 +124,9 @@ export class App {
             <div class="panel-scroll">
               <section class="panel-section presets"><h3><span>01</span> 初期条件</h3><div class="preset-grid">${presetButtons}</div></section>
               <section class="panel-section"><h3><span>02</span> 数値パラメーター</h3>
+                <label class="control"><span>計算モード</span><select id="algorithm-mode"><option value="direct">Direct（現行・厳密）</option><option value="uniform-grid">Uniform Grid（集約・高速）</option></select></label>
+                <label id="grid-resolution-control" class="control grid-resolution-control" hidden><span>集約グリッド</span><select id="grid-resolution"><option value="4">4 × 4（最速）</option><option value="8" selected>8 × 8（推奨）</option><option value="16">16 × 16（高精度）</option><option value="32">32 × 32（最高精度）</option></select></label>
+                <p class="algorithm-note">同じ条件でモードを切り替えると、下のGPU実測値と高速化倍率を比較できます。Gridは正負の循環をセルごとに別集約します。</p>
                 ${range('particle-count', '粒子数', 2, MAX_PARTICLES, 2, DEFAULTS.particleCount)}
                 ${range('time-step', '時間刻み dt', 0.001, 0.03, 0.001, DEFAULTS.dt, '', 3)}
                 ${range('sim-speed', 'シミュレーション速度', 0.1, 3, 0.1, 1, '×', 1)}
@@ -142,11 +145,12 @@ export class App {
                 <div class="sign-picker"><span>描画する循環</span><div><button data-sign="1" class="positive active">＋ 正</button><button data-sign="-1" class="negative">− 負</button></div><small>Shiftを押している間は反転</small></div>
               </section>
               <section class="panel-section performance"><h3><span>04</span> パフォーマンス</h3>
-                <div class="metric-grid"><div><span>GPU STEP</span><strong id="metric-gpu">計測待ち</strong></div><div><span>VORTICES</span><strong id="metric-particles">2</strong></div><div><span>TRACERS</span><strong id="metric-tracers">—</strong></div><div><span>INTERACTIONS</span><strong id="metric-interactions">—</strong></div><div><span>FIELD GRID</span><strong id="metric-field">—</strong></div><div><span>RENDER SCALE</span><strong id="metric-render">—</strong></div></div>
+                <div class="metric-grid"><div><span>GPU STEP</span><strong id="metric-gpu">計測待ち</strong></div><div><span>MODE</span><strong id="metric-algorithm">Direct</strong></div><div><span>VORTICES</span><strong id="metric-particles">2</strong></div><div><span>TRACERS</span><strong id="metric-tracers">—</strong></div><div><span>SOURCES / TARGET</span><strong id="metric-sources">—</strong></div><div><span>PAIR / CELL EVALS</span><strong id="metric-interactions">—</strong></div><div><span>FIELD GRID</span><strong id="metric-field">—</strong></div><div><span>RENDER SCALE</span><strong id="metric-render">—</strong></div></div>
+                <div class="comparison-grid"><div><span>DIRECT</span><strong id="metric-direct">未計測</strong></div><div><span>UNIFORM GRID</span><strong id="metric-grid-time">未計測</strong></div><div><span>SPEEDUP</span><strong id="metric-speedup">両モードを計測</strong></div></div>
                 <div class="workgroup-row"><span>WORKGROUP SIZE</span><b id="metric-workgroup">64</b></div>
               </section>
               <section class="panel-section validation"><h3><span>05</span> 数値検証</h3><div id="cpu-validation"></div><div id="gpu-validation" class="validation-row pending"><span>…</span><div><strong>GPU ↔ CPU f32比較</strong><small>診断計算中</small></div></div></section>
-              <footer>EDUCATIONAL CFD · O(N²) · f32<br />認証解析・安全判断には使用しないでください</footer>
+              <footer id="complexity-footer">EDUCATIONAL CFD · DIRECT O(N²) · f32<br />認証解析・安全判断には使用しないでください</footer>
             </div>
           </aside>
           <div id="drawer-scrim" class="drawer-scrim"></div>
@@ -203,11 +207,21 @@ export class App {
     bindNumber('flow-y', (value) => { this.parameters.uniformFlowY = value; });
     bindNumber('domain-width', (value) => { this.parameters.domainWidth = value; controller.resetTracers(); controller.resetView(); }, true);
     bindNumber('domain-height', (value) => { this.parameters.domainHeight = value; controller.resetTracers(); controller.resetView(); }, true);
-    bindNumber('tracer-count', (value) => { this.parameters.tracerCount = value; controller.resetTracers(); }, true);
+    bindNumber('tracer-count', (value) => { this.parameters.tracerCount = value; controller.resetTracers(); controller.invalidatePerformanceComparison(); }, true);
     bindNumber('trail-length', (value) => { this.parameters.trailLength = value; });
+    const algorithmSelect = requiredElement<HTMLSelectElement>(this.root, '#algorithm-mode');
+    const gridResolutionControl = requiredElement<HTMLElement>(this.root, '#grid-resolution-control');
+    algorithmSelect.addEventListener('change', () => {
+      const mode = algorithmSelect.value as AlgorithmMode;
+      controller.setAlgorithmMode(mode);
+      gridResolutionControl.hidden = mode !== 'uniform-grid';
+    });
+    requiredElement<HTMLSelectElement>(this.root, '#grid-resolution').addEventListener('change', (event) => {
+      controller.setGridResolution(Number((event.currentTarget as HTMLSelectElement).value));
+    });
     requiredElement<HTMLSelectElement>(this.root, '#boundary-mode').addEventListener('change', (event) => { this.parameters.boundaryMode = (event.currentTarget as HTMLSelectElement).value as BoundaryMode; });
     requiredElement<HTMLSelectElement>(this.root, '#display-mode').addEventListener('change', (event) => { controller.displayMode = (event.currentTarget as HTMLSelectElement).value as DisplayMode; });
-    requiredElement<HTMLSelectElement>(this.root, '#quality-mode').addEventListener('change', (event) => { controller.qualityMode = (event.currentTarget as HTMLSelectElement).value as QualityMode; });
+    requiredElement<HTMLSelectElement>(this.root, '#quality-mode').addEventListener('change', (event) => { controller.qualityMode = (event.currentTarget as HTMLSelectElement).value as QualityMode; controller.invalidatePerformanceComparison(); });
     requiredElement<HTMLInputElement>(this.root, '#grid-enabled').addEventListener('change', (event) => { controller.gridEnabled = (event.currentTarget as HTMLInputElement).checked; });
     this.bindCanvasInteractions(canvas, controller);
     window.addEventListener('resize', () => controller.resize());
