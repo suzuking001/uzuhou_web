@@ -9,7 +9,11 @@ struct SimUniforms {
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> cells: array<GridCell>;
-@group(0) @binding(2) var<uniform> sim: SimUniforms;
+@group(0) @binding(2) var<storage, read_write> cellCounts: array<u32>;
+@group(0) @binding(3) var<storage, read_write> memberIndices: array<u32>;
+@group(0) @binding(4) var<uniform> sim: SimUniforms;
+
+const MAX_PARTICLES: u32 = 2048u;
 
 fn particleCell(position: vec2<f32>, resolution: u32) -> vec2<u32> {
   let domain = max(vec2<f32>(sim.domainWidth, sim.domainHeight), vec2<f32>(1e-5));
@@ -31,11 +35,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   var negativeEpsilon2 = 0.0;
   var positiveGamma = 0.0;
   var negativeGamma = 0.0;
+  var memberCount = 0u;
 
   for (var i = 0u; i < sim.particleCount; i++) {
     let particle = particles[i];
     let gamma = particle.positionGammaCore.z;
     if (particle.velocityAgeActive.w < 0.5 || gamma == 0.0 || any(particleCell(particle.positionGammaCore.xy, resolution) != targetCell)) { continue; }
+    memberIndices[id.x * MAX_PARTICLES + memberCount] = i;
+    memberCount += 1u;
     let weight = abs(gamma);
     let epsilon2 = particle.positionGammaCore.w * particle.positionGammaCore.w;
     if (gamma > 0.0) {
@@ -57,5 +64,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (negativeWeight > 0.0) {
     cell.negative = vec4<f32>(negativePosition / negativeWeight, negativeGamma, sqrt(negativeEpsilon2 / negativeWeight));
   }
+  cellCounts[id.x] = memberCount;
   cells[id.x] = cell;
 }

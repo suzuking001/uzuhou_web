@@ -43,7 +43,7 @@ vᵢ = Uy + Σ[j≠i]  Γⱼ/(2π) · (xᵢ-xⱼ)/(rᵢⱼ²+εⱼ²)
 計算モードは次の2種類です。
 
 - **Direct（現行・厳密）**: 1スレッドが1つの渦粒子を担当し、全粒子を直接走査します。相互作用は **O(N²)** です。
-- **Uniform Grid（集約・高速）**: 領域を `4²`～`32²` セルへ分割し、各セルの循環・循環重み付き重心・実効コア半径を集約します。正負の循環は相殺しないよう別々に保持し、粒子更新、トレーサー、速度場から再利用します。セル数を `C` とすると粒子更新はおおむね **O(NC)** です。
+- **Uniform Grid（ハイブリッド）**: 領域を `4²`～`32²` セルへ分割します。評価点を含む近傍 `3×3` セルは元粒子をDirect計算し、遠方セルだけ循環・循環重み付き重心・実効コア半径へ集約します。正負の循環は相殺しないよう別々に保持し、粒子更新、トレーサー、速度場から再利用します。
 
 どちらも workgroup size は `64` で、フレーム中の粒子データ読戻しは行いません。計算後の Storage Buffer をそのまま描画パイプラインへ渡します。
 
@@ -57,7 +57,7 @@ current + midpoint velocity ──final──> next
                                       └─ ping-pong swap
 ```
 
-Direct速度計算は [`src/shaders/vortexVelocity.wgsl`](src/shaders/vortexVelocity.wgsl)、Grid集約は [`src/shaders/uniformGrid.wgsl`](src/shaders/uniformGrid.wgsl)、集約セルからの速度計算は [`src/shaders/gridVelocity.wgsl`](src/shaders/gridVelocity.wgsl) に分離しています。パスの切り替えは [`src/gpu/ComputePipeline.ts`](src/gpu/ComputePipeline.ts) が担当します。
+Direct速度計算は [`src/shaders/vortexVelocity.wgsl`](src/shaders/vortexVelocity.wgsl)、Grid集約とセル粒子リスト構築は [`src/shaders/uniformGrid.wgsl`](src/shaders/uniformGrid.wgsl)、近傍Direct・遠方集約の速度計算は [`src/shaders/gridVelocity.wgsl`](src/shaders/gridVelocity.wgsl) に分離しています。パスの切り替えは [`src/gpu/ComputePipeline.ts`](src/gpu/ComputePipeline.ts) が担当します。
 
 ### 速度比較
 
@@ -65,7 +65,7 @@ Direct速度計算は [`src/shaders/vortexVelocity.wgsl`](src/shaders/vortexVelo
 2. 初期条件や粒子数を変えず Uniform Grid に切り替えます。
 3. `UNIFORM GRID` と `SPEEDUP` を確認します。`SPEEDUP = Direct時間 / Grid時間` なので、`1.00×` より大きいほど高速です。
 
-GPU時間は同じRK2ステップ（トレーサー更新を含む）のタイムスタンプ移動平均です。少粒子では集約コストが勝ってGridが遅い場合があります。Grid解像度を上げるほど空間近似は細かくなりますが、計算量も増えます。
+GPU時間は同じRK2ステップ（トレーサー更新を含む）のタイムスタンプ移動平均です。少粒子では集約コストが勝ってGridが遅い場合があります。Grid解像度を上げるほど遠方近似は細かくなり、近傍セルに含まれるDirect粒子数は減りますが、走査する集約セル数は増えます。このため最速の解像度は粒子分布とGPUによって変わります。
 
 ### TS / WGSL バッファレイアウト
 
@@ -178,11 +178,11 @@ src/
 
 ## 性能と精度の制約
 
-- Direct相互作用は O(N²)。Uniform Gridは固定セル数に対しておおむね O(NC) です。既定最大粒子数は2,048で、実用上限はGPUによって大きく異なります。
+- Direct相互作用は O(N²)。ハイブリッドGridはセル数を `C`、近傍粒子数を `Nnear` とすると、おおむね集約 `O(NC)`、速度評価 `O(N(C + Nnear))` です。既定最大粒子数は2,048で、実用上限はGPUによって大きく異なります。
 - GPU計算は f32。CPU参照の f64 より丸め誤差が大きく、長時間では軌道位相がずれます。
 - 速度場描画にも `粒子数 × サンプル数` の計算が必要です。
 - 正則化コアと速度・移動制限は安定化に有効ですが、空間収束性を保証しません。
-- Uniform Gridはセル内の渦を集約する近似です。Directと同一軌道になることは保証せず、精度が必要な比較ではGrid解像度を上げるかDirectを使用します。
+- Uniform Gridの近傍相互作用はDirectですが、遠方場はセル集約近似です。セル境界由来の急変は単純集約方式より抑えられますが、Directと同一軌道になることは保証しません。
 - 非粘性モデルなので、粘性拡散、壁面境界層、抗力を再現しません。
 - 背景タブ、省電力モード、統合GPU、モバイルの熱制限で性能が変動します。
 

@@ -198,15 +198,19 @@ export class SimulationController {
 
     const directGpuTimeMs = this.algorithmTimings.direct;
     const gridGpuTimeMs = this.algorithmTimings['uniform-grid'];
+    const gridCellCount = this.gridResolution * this.gridResolution;
+    const nearCellCount = Math.min(9, gridCellCount);
+    const estimatedNearParticles = Math.min(this.activeParticleCount, Math.ceil(this.activeParticleCount * nearCellCount / gridCellCount));
+    const hybridSources = estimatedNearParticles + Math.max(0, gridCellCount - nearCellCount) * 2;
     this.callbacks.onMetrics({
       fps: this.fps, gpuTimeMs: this.algorithmTimings[this.algorithmMode], particleCount: this.activeParticleCount,
       tracerCount: effectiveTracerCount,
       interactions: this.algorithmMode === 'direct'
         ? this.activeParticleCount * Math.max(0, this.activeParticleCount - 1)
-        : this.activeParticleCount * this.gridResolution * this.gridResolution * 2,
+        : this.activeParticleCount * hybridSources,
       fieldResolution: settings.fieldResolution, resolutionScale: settings.resolutionScale, workgroupSize: WORKGROUP_SIZE,
       algorithmMode: this.algorithmMode, gridResolution: this.gridResolution,
-      evaluatedSources: this.algorithmMode === 'direct' ? this.activeParticleCount : this.gridResolution * this.gridResolution * 2,
+      evaluatedSources: this.algorithmMode === 'direct' ? this.activeParticleCount : hybridSources,
       directGpuTimeMs, gridGpuTimeMs,
       speedup: directGpuTimeMs !== null && gridGpuTimeMs !== null && gridGpuTimeMs > 0 ? directGpuTimeMs / gridGpuTimeMs : null,
     }, this.simulationTime);

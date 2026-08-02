@@ -114,7 +114,7 @@ export class ComputePipeline {
     if (tracerCount > 0) {
       const tracers = this.device.createBindGroup({
         layout: this.gridTracerPipeline.getBindGroupLayout(0),
-        entries: entries([[0, this.buffers.gridBuffer], [1, this.buffers.currentTracers], [2, this.buffers.nextTracers], [3, this.buffers.trailBuffer], [4, this.buffers.simUniformBuffer]]),
+        entries: entries([[0, this.buffers.nextParticles], [1, this.buffers.gridBuffer], [2, this.buffers.gridCountBuffer], [3, this.buffers.gridIndexBuffer], [4, this.buffers.currentTracers], [5, this.buffers.nextTracers], [6, this.buffers.trailBuffer], [7, this.buffers.simUniformBuffer]]),
       });
       pass.setPipeline(this.gridTracerPipeline);
       pass.setBindGroup(0, tracers);
@@ -125,7 +125,7 @@ export class ComputePipeline {
   private encodeAggregation(pass: GPUComputePassEncoder, particles: GPUBuffer, gridResolution: number): void {
     const group = this.device.createBindGroup({
       layout: this.gridAggregatePipeline.getBindGroupLayout(0),
-      entries: entries([[0, particles], [1, this.buffers.gridBuffer], [2, this.buffers.simUniformBuffer]]),
+      entries: entries([[0, particles], [1, this.buffers.gridBuffer], [2, this.buffers.gridCountBuffer], [3, this.buffers.gridIndexBuffer], [4, this.buffers.simUniformBuffer]]),
     });
     pass.setPipeline(this.gridAggregatePipeline);
     pass.setBindGroup(0, group);
@@ -135,7 +135,7 @@ export class ComputePipeline {
   private encodeGridVelocity(pass: GPUComputePassEncoder, particles: GPUBuffer, destination: GPUBuffer, groups: number): void {
     const group = this.device.createBindGroup({
       layout: this.gridVelocityPipeline.getBindGroupLayout(0),
-      entries: entries([[0, particles], [1, this.buffers.gridBuffer], [2, destination], [3, this.buffers.simUniformBuffer]]),
+      entries: entries([[0, particles], [1, this.buffers.gridBuffer], [2, this.buffers.gridCountBuffer], [3, this.buffers.gridIndexBuffer], [4, destination], [5, this.buffers.simUniformBuffer]]),
     });
     pass.setPipeline(this.gridVelocityPipeline);
     pass.setBindGroup(0, group);
@@ -148,7 +148,7 @@ export class ComputePipeline {
       this.encodeAggregation(pass, source, gridResolution);
       const group = this.device.createBindGroup({
         layout: this.gridFieldPipeline.getBindGroupLayout(0),
-        entries: entries([[0, this.buffers.gridBuffer], [1, this.buffers.fieldBuffer], [2, this.buffers.simUniformBuffer]]),
+        entries: entries([[0, source], [1, this.buffers.gridBuffer], [2, this.buffers.gridCountBuffer], [3, this.buffers.gridIndexBuffer], [4, this.buffers.fieldBuffer], [5, this.buffers.simUniformBuffer]]),
       });
       pass.setPipeline(this.gridFieldPipeline);
       pass.setBindGroup(0, group);

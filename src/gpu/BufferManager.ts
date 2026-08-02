@@ -1,4 +1,4 @@
-import { GRID_CELL_BYTES, MAX_FIELD_CELLS, MAX_GRID_CELLS, MAX_PARTICLES, MAX_TRACERS, MAX_TRAIL_POINTS, PARTICLE_STRIDE } from '../simulation/constants';
+import { GRID_CELL_BYTES, GRID_COUNT_BYTES, GRID_INDEX_BYTES, MAX_FIELD_CELLS, MAX_GRID_CELLS, MAX_PARTICLES, MAX_TRACERS, MAX_TRAIL_POINTS, PARTICLE_STRIDE } from '../simulation/constants';
 import { packParticles } from '../simulation/layout';
 import type { SimulationParameters, VortexParticle } from '../simulation/types';
 
@@ -13,6 +13,8 @@ export class BufferManager {
   readonly trailBuffer: GPUBuffer;
   readonly fieldBuffer: GPUBuffer;
   readonly gridBuffer: GPUBuffer;
+  readonly gridCountBuffer: GPUBuffer;
+  readonly gridIndexBuffer: GPUBuffer;
   readonly simUniformBuffer: GPUBuffer;
   readonly cameraUniformBuffer: GPUBuffer;
   particleFront = 0;
@@ -35,6 +37,8 @@ export class BufferManager {
     this.trailBuffer = device.createBuffer({ label: 'tracer-history', size: MAX_TRACERS * MAX_TRAIL_POINTS * 16, usage: storage | GPUBufferUsage.COPY_DST });
     this.fieldBuffer = device.createBuffer({ label: 'velocity-field', size: MAX_FIELD_CELLS * 16, usage: storage });
     this.gridBuffer = device.createBuffer({ label: 'uniform-grid-aggregates', size: MAX_GRID_CELLS * GRID_CELL_BYTES, usage: storage });
+    this.gridCountBuffer = device.createBuffer({ label: 'uniform-grid-counts', size: GRID_COUNT_BYTES, usage: storage });
+    this.gridIndexBuffer = device.createBuffer({ label: 'uniform-grid-particle-indices', size: GRID_INDEX_BYTES, usage: storage });
     this.simUniformBuffer = device.createBuffer({ label: 'simulation-uniforms', size: SIM_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.cameraUniformBuffer = device.createBuffer({ label: 'camera-uniforms', size: CAMERA_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
@@ -95,6 +99,6 @@ export class BufferManager {
   }
 
   destroy(): void {
-    [...this.particleBuffers, this.velocityBuffer, this.midpointBuffer, ...this.tracerBuffers, this.trailBuffer, this.fieldBuffer, this.gridBuffer, this.simUniformBuffer, this.cameraUniformBuffer].forEach((buffer) => buffer.destroy());
+    [...this.particleBuffers, this.velocityBuffer, this.midpointBuffer, ...this.tracerBuffers, this.trailBuffer, this.fieldBuffer, this.gridBuffer, this.gridCountBuffer, this.gridIndexBuffer, this.simUniformBuffer, this.cameraUniformBuffer].forEach((buffer) => buffer.destroy());
   }
 }
