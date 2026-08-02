@@ -13,6 +13,7 @@ export type BoundaryMode = 'wrap' | 'delete' | 'reflect';
 export type PresetId = 'co-rotating' | 'dipole' | 'street' | 'kelvin-helmholtz' | 'random' | 'draw';
 export type DisplayMode = 'combined' | 'vortices' | 'tracers' | 'vectors' | 'heatmap';
 export type QualityMode = 'auto' | 'low' | 'medium' | 'high' | 'ultra';
+export type AlgorithmMode = 'direct' | 'uniform-grid';
 
 export interface SimulationParameters {
   particleCount: number;
@@ -39,6 +40,12 @@ export interface PerformanceSnapshot {
   fieldResolution: number;
   resolutionScale: number;
   workgroupSize: number;
+  algorithmMode: AlgorithmMode;
+  gridResolution: number;
+  evaluatedSources: number;
+  directGpuTimeMs: number | null;
+  gridGpuTimeMs: number | null;
+  speedup: number | null;
 }
 
 export interface QualitySettings {
